@@ -123,8 +123,8 @@ type User struct {
 	password string
 	encKey []byte
 	macKey []byte
-	fileEnckey []byte
-	fileMacKey []byte
+	fileEnckey []byte //key for current file, set in getfile()
+	fileMacKey []byte //key for current file mac, set in getfile()
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
 	// On the flipside, if you have an attribute that you want to be able to access from
@@ -174,7 +174,7 @@ type Invitation struct {
 }
 
 func GetUserID(username string) (userUUID uuid.UUID, err error) {
-	userUUID, err = uuid.FromBytes([]byte(userlib.Hash([]byte(username)))[0:17]) // can you open a shared terminal pls
+	userUUID, err = uuid.FromBytes([]byte(userlib.Hash([]byte(username)))[0:16]) // can you open a shared terminal pls
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -198,6 +198,7 @@ func VerifyUser(username string, password string, userCont UserContainer) (equal
 func GetLocalKey(username string, password string, purpose string) (key []byte, err error) {
 	srcKey := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	key, err = userlib.HashKDF(srcKey, []byte(purpose))
+	key = key[0:16]
 	if err != nil {
 		return nil, err
 	}
