@@ -110,20 +110,20 @@ func someUsefulThings() {
 // (e.g. like the Username attribute) and methods (e.g. like the StoreFile method below).
 type UserContainer struct {
 	UserStruct []byte
-	UserMAC []byte
+	UserMAC    []byte
 }
 
 type User struct {
 	Username string
-	Salt []byte
+	Salt     []byte
 	PassHash []byte
-	RSASK userlib.PKEDecKey
-	SigSK userlib.DSSignKey
-	
-	password string
-	encKey []byte
-	macKey []byte
-	fileEnckey []byte //key for current file, set in getfile()
+	RSASK    userlib.PKEDecKey
+	SigSK    userlib.DSSignKey
+
+	password   string
+	encKey     []byte
+	macKey     []byte
+	fileEncKey []byte //key for current file, set in getfile()
 	fileMacKey []byte //key for current file mac, set in getfile()
 	// You can add other attributes here if you want! But note that in order for attributes to
 	// be included when this struct is serialized to/from JSON, they must be capitalized.
@@ -136,26 +136,31 @@ type User struct {
 var currentUser User
 
 type FileContainer struct {
-	FileStruct []byte
-	FileMAC []byte
+	FileStruct   []byte
+	FileMAC      []byte
 	UserTreeUUID uuid.UUID
 }
 
 type File struct {
-	FileName []byte
+	FileName       []byte
 	UpdateListHead uuid.UUID
 	UpdateListTail uuid.UUID
 }
 
-type UserTree struct {
-	Username string
-	FileSourceKey []byte
+type FilePointer struct {
+	FileContUUID []byte // Encrpyt using local key, "encryption"
+	UUIDMAC      []byte // MAC using local key, "mac"
 }
 
+type UserTree struct {
+	Username   string
+	FileEncKey []byte // RSA encrypted
+	FileMacKey []byte // RSA encrypted
+}
 
 type UpdateListContainer struct {
-	ListStruct []byte
-	ListMAC []byte
+	UpdateList []byte
+	ListMAC    []byte
 }
 
 type UpdateList struct {
@@ -163,38 +168,37 @@ type UpdateList struct {
 	NextUUID uuid.UUID
 }
 
-type InvitationPtr struct {
-	InvitStruct Invitation
-	Sig []byte
+type InvitationContainer struct {
+	InvitStruct []byte
+	Sig         []byte
 }
 
 type Invitation struct {
 	FileContainer uuid.UUID
-	FilePK userlib.PKEEncKey
+	FilePK        []byte
 }
 
+// Returns UUID of a UserContainer
 func GetUserID(username string) (userUUID uuid.UUID, err error) {
-	userUUID, err = uuid.FromBytes([]byte(userlib.Hash([]byte(username)))[0:16]) // can you open a shared terminal pls
+	userInput := userlib.Hash([]byte(username))
+	userUUID, err = uuid.FromBytes(userInput[0:16])
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, errors.New(strings.ToTitle("cannot get UUID from username bytes"))
 	}
 	return userUUID, nil
 }
 
-func VerifyUser(username string, password string, userCont UserContainer) (equal bool, err error) {
-	macKey, err := GetLocalKey(username, password, "mac")
+// Returns UUID of a file pointer that points to OG file container
+func GetFilePtrID(username string, filename string) (fileUUID uuid.UUID, err error) {
+	fileInput := userlib.Hash([]byte(username + "/" + filename))
+	fileUUID, err = uuid.FromBytes(fileInput[0:16])
 	if err != nil {
-		return false, err
+		return uuid.Nil, errors.New(strings.ToTitle("cannot get UUID from username/filename bytes"))
 	}
-
-	currMAC, err := userlib.HMACEval(macKey, userCont.UserStruct)
-	if err != nil {
-		return false, err
-	}
-	equal = userlib.HMACEqual(currMAC, userCont.UserMAC)
-	return equal, nil
+	return fileUUID, nil
 }
 
+// Create local keys for users
 func GetLocalKey(username string, password string, purpose string) (key []byte, err error) {
 	srcKey := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	key, err = userlib.HashKDF(srcKey, []byte(purpose))
@@ -205,17 +209,101 @@ func GetLocalKey(username string, password string, purpose string) (key []byte, 
 	return key, nil
 }
 
-func GetFile(filename string) (filedataptr *File, err error) { //returns file, returns false if errors
-	ok := false
-	byteFilename := []byte(filename)
+// Checks that current HMAC of user struct matches saved HMAC
+func VerifyUserMAC(username string, password string, userCont UserContainer) (err error) {
+	macKey, err := GetLocalKey(username, password, "mac")
+	if err != nil {
+		return err
+	}
+	currMAC, err := userlib.HMACEval(macKey, userCont.UserStruct)
+	if err != nil {
+		return err
+	}
+	equal := userlib.HMACEqual(currMAC, userCont.UserMAC)
+	if !equal {
+		return errors.New(strings.ToTitle("user struct has been compromised"))
+	}
+	return nil
+}
+
+// Checks integrity of user struct and returns a UserContainer
+func GetUserContainer(username string, password string) (userCont *UserContainer, err error) {
+	// Get user container
+	userContUUID, err := GetUserID(username)
 	if err != nil {
 		return nil, err
 	}
-	fileMapUUID, err := uuid.FromBytes([]byte(userlib.Hash(byteFilename))[0:17]) //key:value where value points to file
-	if err != nil {
-		return nil, errors.New(strings.ToTitle("cannot get uuid from bytes"))
+	userContBytes, ok := userlib.DatastoreGet(userContUUID)
+	if !ok {
+		return nil, errors.New(strings.ToTitle("user container not found in datastore"))
 	}
-	
+
+	// Unmarshal user container
+	err = json.Unmarshal(userContBytes, &userCont)
+	if err != nil {
+		return nil, errors.New(strings.ToTitle("cannot unmarshal user container bytes"))
+	}
+
+	// Check stored and computed MACs
+	err = VerifyUserMAC(username, password, *userCont)
+	if err != nil {
+		return nil, err
+	}
+	return userCont, nil
+}
+
+// Returns FilePointer if it exists
+func GetFilePtr(userdata *User, filename string) (filePtr *FilePointer, err error) {
+	filePtrUUID, err := GetFilePtrID(userdata.Username, filename)
+	if err != nil {
+		return nil, err
+	}
+	filePtrBytes, ok := userlib.DatastoreGet(filePtrUUID)
+	if !ok {
+		return nil, errors.New(strings.ToTitle("filename does not exist in caller's namespace"))
+	}
+
+	// Unmarshal file pointer
+	err = json.Unmarshal(filePtrBytes, &filePtr)
+	if err != nil {
+		return nil, errors.New(strings.ToTitle("cannot unmarshal file pointer bytes"))
+	}
+
+	return filePtr, nil
+}
+
+// Checks integrity of file pointer struct and returns UUID of FileContainer
+func GetFileContUUID(userdata *User, filename string) (fileCont uuid.UUID, err error) {
+	filePtr, err := GetFilePtr(userdata, filename)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	// Check MAC of file container's UUID
+	currMAC, err := userlib.HMACEval(userdata.macKey, filePtr.FileContUUID)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot compute HMAC of file pointer"))
+	}
+	equal := userlib.HMACEqual(currMAC, filePtr.UUIDMAC)
+	if !equal {
+		return uuid.Nil, errors.New(strings.ToTitle("file pointer has been compromised"))
+	}
+
+	// Get file container's UUID
+	UUIDBytes := userlib.SymDec(userdata.encKey, filePtr.FileContUUID)
+	var contUUID uuid.UUID
+	err = json.Unmarshal(UUIDBytes, &contUUID)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot unmarshal UUID of file container"))
+	}
+
+	return contUUID, nil
+}
+
+// Returns file, returns false if errors
+func GetFile(filename string) (filedataptr *File, err error) {
+	fileMapUUID, err := GetFileContUUID(&currentUser, filename)
+
 	//get file container uuid
 	EncfileContainerUUID, ok := userlib.DatastoreGet(fileMapUUID)
 	if ok == false {
@@ -229,7 +317,7 @@ func GetFile(filename string) (filedataptr *File, err error) { //returns file, r
 	if ok == false {
 		return nil, errors.New(strings.ToTitle("fileContainerUUID not found"))
 	}
-	var fileContainer FileContainer;
+	var fileContainer FileContainer
 	err = json.Unmarshal(fileContBytes, &fileContainer)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("File Container not found"))
@@ -239,7 +327,7 @@ func GetFile(filename string) (filedataptr *File, err error) { //returns file, r
 	if ok == false {
 		return nil, errors.New(strings.ToTitle("userTree not found"))
 	}
-	
+
 	var userList []UserTree //temp user tree
 	err = json.Unmarshal(userTreeArr, &userList)
 	if err != nil {
@@ -247,27 +335,29 @@ func GetFile(filename string) (filedataptr *File, err error) { //returns file, r
 	}
 
 	found := false
-	var fileSourceKey []byte
+	var fileEncKey []byte
+	var fileMacKey []byte
 	for i := 0; i < len(userList); i++ {
 		if currentUser.Username == userList[i].Username {
 			found = true
 			// user is acquiring file's symetric key here
-			fileSourceKey, err = userlib.PKEDec(currentUser.RSASK, userList[i].FileSourceKey)
+			fileEncKey, err = userlib.PKEDec(currentUser.RSASK, userList[i].FileEncKey)
+			fileMacKey, err = userlib.PKEDec(currentUser.RSASK, userList[i].FileMacKey)
 			if err != nil {
 				return nil, err
 			}
 			break
-		}		
+		}
 	}
 	if found != true {
 		return nil, errors.New(strings.ToTitle("user not found in user tree"))
 	}
 
-	currentUser.fileEnckey, err = userlib.HashKDF(fileSourceKey, []byte("encryption"))
-	currentUser.fileMacKey, err = userlib.HashKDF(fileSourceKey, []byte("mac"))
-	
+	currentUser.fileEncKey = fileEncKey
+	currentUser.fileMacKey = fileMacKey
+
 	//decrypt file container using file symmetric key
-	marshalFileStruct := userlib.SymDec(currentUser.fileEnckey, fileContainer.FileStruct)
+	marshalFileStruct := userlib.SymDec(currentUser.fileEncKey, fileContainer.FileStruct)
 	//verify file HMAC
 	HMACnew, err := userlib.HMACEval(currentUser.fileMacKey, marshalFileStruct)
 	if err != nil {
@@ -282,7 +372,7 @@ func GetFile(filename string) (filedataptr *File, err error) { //returns file, r
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot unmarshall filestruct"))
 	}
-	
+
 	filedataptr = &filestruct
 	return filedataptr, nil
 }
@@ -303,9 +393,9 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	}
 
 	// Create user struct
-	userdataptr = &User {
+	userdataptr = &User{
 		Username: username,
-		Salt: userlib.RandomBytes(512),
+		Salt:     userlib.RandomBytes(512),
 		password: password,
 	}
 
@@ -316,7 +406,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 	userdataptr.RSASK = rsaSK
-	err = userlib.KeystoreSet(username + "_RSA", rsaPK)
+	err = userlib.KeystoreSet(username+"_RSA", rsaPK)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +416,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 	userdataptr.SigSK = sigSK
-	err = userlib.KeystoreSet(username + "_Sig", sigPK)
+	err = userlib.KeystoreSet(username+"_Sig", sigPK)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +438,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, err
 	}
-	userCont := UserContainer {
+	userCont := UserContainer{
 		UserStruct: userlib.SymEnc(userdataptr.encKey, userlib.RandomBytes(16), userBytes),
 	}
 	mac, err := userlib.HMACEval(userdataptr.macKey, userCont.UserStruct)
@@ -356,7 +446,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, err
 	}
 	userCont.UserMAC = mac
-	
+
 	userContBytes, err := json.Marshal(userCont)
 	if err != nil {
 		return nil, err
@@ -367,34 +457,17 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 }
 
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	userUUID, err := GetUserID(username)
-	if err != nil {
-		return nil, err
-	}
-	
-	userContBytes, ok := userlib.DatastoreGet(userUUID)
-	if !ok {
-		return nil, err
-	}
-
-	var userCont UserContainer
-	err = json.Unmarshal(userContBytes, &userCont)
+	// Verify validiity and integrity of user struct
+	userCont, err := GetUserContainer(username, password)
 	if err != nil {
 		return nil, err
 	}
 
-	equal, err := VerifyUser(username, password, userCont)
-	if err != nil {
-		return nil, err
-	} else if !equal {
-		return nil, errors.New(strings.ToTitle("user struct has been compromised"))
-	}
-
+	// Decrypt user struct
 	decKey, err := GetLocalKey(username, password, "encryption")
 	if err != nil {
 		return nil, err
 	}
-	
 	userBytes := userlib.SymDec(decKey, userCont.UserStruct)
 	var userStruct User
 	err = json.Unmarshal(userBytes, &userStruct)
@@ -408,51 +481,274 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return nil, errors.New(strings.ToTitle("incorrect password"))
 	}
 
+	// Set system's current user to userdata
 	var userdata User
 	userdataptr = &userdata
-	currentUser = userdata //sets system's current user to userdata
+	currentUser = userdata
 	return userdataptr, nil
 }
 
 func (userdata *User) StoreFile(filename string, content []byte) (err error) {
-	storageKey, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	//call verify user
+	//check if hash(filename) exists already
+	fileExist := true
+	containerUUID, err := GetFileContUUID(&currentUser, filename) //CHANGE
+	if err != nil {                                               //file does not exist
+		fileExist = false
+		containerUUID = uuid.New()
+	}
+	var fileStruct File
+	if fileExist == false {
+		//create new file struct
+		fileStruct = File{FileName: []byte(filename)}
+		//create new user file enc and file mac keys
+		currentUser.fileEncKey = userlib.RandomBytes(16)
+		currentUser.fileMacKey = userlib.RandomBytes(16)
+	}
+	//if file exists
+	if fileExist == true {
+		fileStruct, err := GetFile(filename)
+		if err != nil {
+			return err
+		}
+		//iterate through and delete everything
+		curr := fileStruct.UpdateListHead
+		nodeUUIDs := make([]uuid.UUID, 0) //dynamic length array using append
+		for curr != fileStruct.UpdateListTail {
+			nodeUUIDs = append(nodeUUIDs, curr)
+			updateContainerMarshal, ok := userlib.DatastoreGet(curr)
+			var updateContainer UpdateListContainer
+			json.Unmarshal(updateContainerMarshal, &updateContainer)
+			if ok == false {
+				return errors.New(strings.ToTitle("not Ok when trying to get curr"))
+			}
+			var newUpdateNode UpdateList
+			newUpdateNodeMarshal := userlib.SymDec(currentUser.fileEncKey, updateContainer.UpdateList)
+			err = json.Unmarshal(newUpdateNodeMarshal, &newUpdateNode)
+			if err != nil {
+				return err
+			}
+			curr = newUpdateNode.NextUUID
+		}
+		//iterate to delete all nodes in updatelist
+		for i := 0; i < len(nodeUUIDs); i++ {
+			userlib.DatastoreDelete(nodeUUIDs[i])
+		}
+	}
+
+	//generate new UUID
+	newHeadUUID := uuid.New()
+	newTailUUID := uuid.New()
+	fileStruct.UpdateListHead = newHeadUUID
+	fileStruct.UpdateListTail = newTailUUID
+
+	//create new Update List for file
+	newListNode := UpdateList{Contents: content, NextUUID: newTailUUID}
+	newListNodeMarshal, err := json.Marshal(newListNode)
 	if err != nil {
 		return err
 	}
-	contentBytes, err := json.Marshal(content)
+	//compute node hmac and encrypt
+	encryptedNewListNode := userlib.SymEnc(currentUser.fileEncKey, userlib.RandomBytes(16), newListNodeMarshal)
+	newListNodeHMAC, err := userlib.HMACEval(currentUser.fileMacKey, newListNodeMarshal)
 	if err != nil {
 		return err
 	}
-	userlib.DatastoreSet(storageKey, contentBytes)
-	return
+	newListContainer := UpdateListContainer{UpdateList: encryptedNewListNode, ListMAC: newListNodeHMAC}
+	newListContainerMarshal, err := json.Marshal(newListContainer)
+	if err != nil {
+		return err
+	}
+	userlib.DatastoreSet(newHeadUUID, newListContainerMarshal)
+
+	//update and store file struct + file container struct
+	fileStructMarshal, err := json.Marshal(fileStruct)
+	if err != nil {
+		return err
+	}
+	fileStructEnc := userlib.SymEnc(currentUser.fileEncKey, userlib.RandomBytes(16), fileStructMarshal)
+	var fileContainer FileContainer
+	fileContainerMarshal, ok := userlib.DatastoreGet(containerUUID)
+	if ok == false {
+		return errors.New(strings.ToTitle("datastore get container uuid not ok"))
+	}
+	json.Unmarshal(fileContainerMarshal, &fileContainer)
+	fileContainer.FileStruct = fileStructEnc
+	if fileExist == false {
+		//encrypt filesymkey using user's rsa public key
+		//create new array of user trees
+		userRSAPublicKey, ok := userlib.KeystoreGet(currentUser.Username + "RSA")
+		if ok == false {
+			return errors.New(strings.ToTitle("username rsa public key not in keystore"))
+		}
+		rsaEncryptedFileEncKey, err := userlib.PKEEnc(userRSAPublicKey, currentUser.fileEncKey)
+		if err != nil {
+			return err
+		}
+		rsaEncryptedFileMacKey, err := userlib.PKEEnc(userRSAPublicKey, currentUser.fileMacKey)
+		if err != nil {
+			return err
+		}
+
+		userTreeArray := []UserTree{UserTree{Username: currentUser.Username, FileEncKey: rsaEncryptedFileEncKey, FileMacKey: rsaEncryptedFileMacKey}}
+		userTreeArrayMarshal, err := json.Marshal(userTreeArray)
+		if err != nil {
+			return err
+		}
+		userTreeEnc := userlib.SymEnc(currentUser.fileEncKey, userlib.RandomBytes(16), userTreeArrayMarshal)
+		userlib.DatastoreSet(containerUUID, userTreeEnc)
+	}
+
+	return nil
 }
 
 func (userdata *User) AppendToFile(filename string, content []byte) error {
-	return nil
+
 }
 
 func (userdata *User) LoadFile(filename string) (content []byte, err error) {
-	storageKey, err := uuid.FromBytes(userlib.Hash([]byte(filename + userdata.Username))[:16])
+	_, err = GetUserContainer(currentUser.Username, currentUser.password)
 	if err != nil {
 		return nil, err
 	}
-	dataJSON, ok := userlib.DatastoreGet(storageKey)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("file not found"))
+	var fileStruct File
+	fileStructptr, err := GetFile(filename)
+	fileStruct = *fileStructptr
+	var fileContents []byte
+	//iterates through file
+	curr := fileStruct.UpdateListHead
+	for curr != fileStruct.UpdateListTail {
+		updateContainerMarshal, ok := userlib.DatastoreGet(curr)
+		var updateContainer UpdateListContainer
+		json.Unmarshal(updateContainerMarshal, &updateContainer)
+		if ok == false {
+			return nil, errors.New(strings.ToTitle("not Ok when trying to get curr"))
+		}
+		//verify hmac of container
+		var updateList UpdateList
+		updateListMarshal := userlib.SymDec(currentUser.fileEncKey, updateContainer.UpdateList)
+		json.Unmarshal(updateListMarshal, &updateList)
+		fileContents = append(fileContents, updateList.Contents)
 	}
-	err = json.Unmarshal(dataJSON, &content)
+	content = []byte(fileContents)
 	return content, err
 }
 
-func (userdata *User) CreateInvitation(filename string, recipientUsername string) (
-	invitationPtr uuid.UUID, err error) {
+func (userdata *User) CreateInvitation(filename string, recipientUsername string) (invitationPtr uuid.UUID, err error) {
+	// Check integrity of caller's user struct
+	_, err = GetUserContainer(userdata.Username, userdata.password)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	// Check if filename exists in caller's namespace and get file container UUID
+	fileContUUID, err := GetFileContUUID(userdata, filename)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	// Check if recipient exists
+	recipUUID, err := GetUserID(recipientUsername)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	_, ok := userlib.DatastoreGet(recipUUID)
+	if !ok {
+		return uuid.Nil, errors.New(strings.ToTitle("recipient username does not exist"))
+	}
+
+	// Create invitation
+	_, err = GetFile(filename) // Used to set userdata.fileEnckey
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	invitation := Invitation{
+		FileContainer: fileContUUID,
+		FilePK:        userdata.fileEncKey,
+	}
+
+	// Encrypt invitation struct with recipient's RSA public key
+	recipRSAPK, ok := userlib.KeystoreGet(recipientUsername + "_RSA")
+	if !ok {
+		return uuid.Nil, errors.New(strings.ToTitle("recipient RSA public key not found in keystore"))
+	}
+	invitBytes, err := json.Marshal(invitation)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot marshal invitation bytes"))
+	}
+	encInvit, err := userlib.PKEEnc(recipRSAPK, invitBytes)
+
+	// Create invitation container
+	invitCont := InvitationContainer{
+		InvitStruct: encInvit,
+	}
+	invitCont.Sig, err = userlib.DSSign(userdata.SigSK, invitCont.InvitStruct)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot sign encrypted invitation struct"))
+	}
+
+	// Save initation container on datastore
+	invitationPtr = uuid.New()
+	invitContBytes, err := json.Marshal(invitCont)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot marshal invitation container bytes"))
+	}
+	userlib.DatastoreSet(invitationPtr, invitContBytes)
+	return invitationPtr, nil
+}
+
+func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid.UUID, filename string) (err error) {
+	// Verify integrity of caller's user struct
+	_, err = GetUserContainer(userdata.Username, userdata.password)
+	if err != nil {
+		return err
+	}
+
+	// Check if filename exists in caller's namespace
+	filePtr, err := GetFilePtr(userdata, filename)
+	if err != nil {
+		return err
+	} else if filePtr != nil {
+		return errors.New(strings.ToTitle("filename already exists in caller's namespace"))
+	}
+
+	// Check if sender exists
+	recipUUID, err := GetUserID(senderUsername)
+	if err != nil {
+		return err
+	}
+	_, ok := userlib.DatastoreGet(recipUUID)
+	if !ok {
+		return errors.New(strings.ToTitle("recipient username does not exist"))
+	}
+
+	// Get invitation container
+	invitContBytes, ok := userlib.DatastoreGet(invitationPtr)
+	if !ok {
+		return errors.New(strings.ToTitle("invitation container bytes not found in datastore"))
+	}
+	var invitCont InvitationContainer
+	err = json.Unmarshal(invitContBytes, &invitCont)
+	if err != nil {
+		return errors.New(strings.ToTitle("cannot unmarshal invitation container bytes"))
+	}
+
+	// Verify invitation signature
+	verifyKey, ok := userlib.KeystoreGet(senderUsername + "_Sig")
+	if !ok {
+		return errors.New(strings.ToTitle("sender user's signature publi key not found in keystore"))
+	}
+	err = userlib.DSVerify(verifyKey, invitCont.InvitStruct, invitCont.Sig)
+	if err != nil {
+		return errors.New(strings.ToTitle("invitation signiture is invalid"))
+	}
+
+	// Create file pointer
+
 	return
 }
 
-func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid.UUID, filename string) error {
-	return nil
-}
-
-func (userdata *User) RevokeAccess(filename string, recipientUsername string) error {
+func (userdata *User) RevokeAccess(filename string, recipientUsername string) (err error) {
 	return nil
 }
