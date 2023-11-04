@@ -36,6 +36,8 @@ const emptyString = ""
 const contentOne = "Bitcoin is Nick's favorite "
 const contentTwo = "digital "
 const contentThree = "cryptocurrency!"
+const nonAlpa = "&&"
+const contentLong = ""
 
 // ================================================
 // Describe(...) blocks help you organize your tests
@@ -248,5 +250,223 @@ var _ = Describe("Client Tests", func() {
 			Expect(err).ToNot(BeNil())
 		})
 
+	})
+
+	//Custom tests
+	Describe("Init User Tests", func() { 
+		Specify("Test: InitUser with already existing username.", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Initializing another user Alice.")
+			bob, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: InitUser with empty username.", func() {
+			userlib.DebugMsg("Initializing user with empty username.")
+			alice, err = client.InitUser("", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: InitUser for username case-sensitivity.", func() {
+			userlib.DebugMsg("Initializing user Bob.")
+			alice, err = client.InitUser("Bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Initializing user bob.")
+			bob, err = client.InitUser("bob", defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: InitUser with non-alphanumeric username.", func() {
+			userlib.DebugMsg("Initializing user &&.")
+			alice, err = client.InitUser(nonAlpa, defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: InitUser with empty password.", func() {
+			userlib.DebugMsg("Initializing user Alice with empty password.")
+			alice, err = client.InitUser("Alice", emptyString)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: InitUser with non-alphanumeric password.", func() {
+			userlib.DebugMsg("Initializing user Alice with non-alphanumeric password.")
+			alice, err = client.InitUser("Alice", nonAlpa)
+			Expect(err).To(BeNil())
+		})
+	})
+	
+	Describe("GetUser Tests", func() { 
+		Specify("Test: GetUser with uninitialized user.", func() {
+			userlib.DebugMsg("Get user Alice.")
+			alice, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: GetUser with invalid paassword.", func() {
+			userlib.DebugMsg("Initialize user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice with invalid password")
+			alice, err = client.GetUser("Alice", contentOne)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: GetUser with correct password.", func() {
+			userlib.DebugMsg("Initialize user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice with correct password.")
+			alice, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: GetUser with compromised user struct.", func() {
+			userlib.DebugMsg("Initialize user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			// TODO: Figure out how to use getmap
+			// userlib.DatastoreGetMap()
+			// userlib.DatastoreSet()
+
+			// userlib.DebugMsg("Get user Alice with compromised user struct.")
+			// alice, err = client.GetUser("Alice", defaultPassword)
+			// Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: GetUser with deleted user container.", func() {
+			userlib.DebugMsg("Initialize user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DatastoreClear()
+
+			userlib.DebugMsg("Get user Alice with deleted user container.")
+			alice, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).ToNot(BeNil())
+		})
+
+		Specify("Test: GetUser with multiple devices.", func() {
+			userlib.DebugMsg("Initialize user Alice on desktop.")
+			aliceDesktop, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice on phone.")
+			alicePhone, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+			
+			userlib.DebugMsg("Get user Alice on laptop.")
+			aliceLaptop, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: GetUser with 2 users with same password.", func() {
+			userlib.DebugMsg("Initialize user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice with correct password.")
+			alice, err = client.GetUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Initialize user Bob.")
+			bob, err = client.InitUser("Bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Bob with correct password.")
+			bob, err = client.GetUser("Bob", defaultPassword)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: GetUser with valid empty password.", func() {
+			userlib.DebugMsg("Initialize user Alice with empty password.")
+			alice, err = client.InitUser("Alice", emptyString)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice with valid empty password.")
+			alice, err = client.GetUser("Alice", emptyString)
+			Expect(err).To(BeNil())
+		})
+
+		Specify("Test: GetUser with valid non-alphanumeric password.", func() {
+			userlib.DebugMsg("Initialize user Alice with non-alphanumeric password.")
+			alice, err = client.InitUser("Alice", nonAlpa)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Get user Alice with valid non-alphanumeric password.")
+			alice, err = client.GetUser("Alice", nonAlpa)
+			Expect(err).To(BeNil())
+		})
+	})
+
+	Describe("StoreFile/LoadFile Tests", func() {
+		Specify("Test: Store/Load with empty filename.", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Storing file data with empty filename: %s", contentOne)
+			err = alice.StoreFile(emptyString, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Loading file...")
+			data, err := alice.LoadFile(emptyString)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
+
+		Specify("Test: Store/Load with non-alphanumeric filename.", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Storing file data with non-alphanumeric filename: %s", contentOne)
+			err = alice.StoreFile(nonAlpa, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Loading file...")
+			data, err := alice.LoadFile(nonAlpa)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
+
+		Specify("Test: Store/Load with multiple users, same file name, and different contents.", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err = client.InitUser("Alice", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Storing file data: %s", contentOne)
+			err = alice.StoreFile(aliceFile, []byte(contentOne))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Loading file...")
+			data, err := alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+
+			userlib.DebugMsg("Initializing user Bob.")
+			bob, err = client.InitUser("Bob", defaultPassword)
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Storing file data: %s", contentTwo)
+			err = bob.StoreFile(aliceFile, []byte(contentTwo))
+			Expect(err).To(BeNil())
+
+			userlib.DebugMsg("Loading file...")
+			data, err = bob.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentTwo)))
+
+			userlib.DebugMsg("Loading file...")
+			data, err = alice.LoadFile(aliceFile)
+			Expect(err).To(BeNil())
+			Expect(data).To(Equal([]byte(contentOne)))
+		})
 	})
 })

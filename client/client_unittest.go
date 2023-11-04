@@ -56,5 +56,17 @@ var _ = Describe("Client Unit Tests", func() {
 			// struct fields because not all implementations will have a username field.
 			Expect(alice.Username).To(Equal("alice"))
 		})
+
+		Specify("Basic Test: Check GetUserStruct correctly returns correct user struct", func() {
+			userlib.DebugMsg("Initializing user Alice.")
+			alice, err := InitUser("alice", "password")
+			Expect(err).To(BeNil())
+
+			//userStruct, err := GetUserStruct(username, "password")
+
+			Expect(alice.Username).To(Equal("alice"))
+		})
+
+
 	})
 })
