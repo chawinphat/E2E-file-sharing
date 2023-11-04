@@ -285,7 +285,7 @@ func GetFilePointer(userdata *User, filename string, username string) (filePoint
 	var filePointerContainer FilePointerContainer
 	err = json.Unmarshal(filePointerContainerMarshal, &filePointerContainer)
 	if err != nil {
-		return nil, errors.New(strings.ToTitle("here3"))
+		return nil, err //HERE3
 	}
 
 	// Check integrity of FileOwner
@@ -411,7 +411,11 @@ func GetUserTreeFromTreeContainer(userdata *User, treeContainer UserTreeContaine
 	if err != nil {
 		return nil, err
 	}
-	macKey := filePtr.FileMacKey
+
+	macKey, err := userlib.PKEDec(userdata.RSASK, filePtr.FileMacKey)
+	if err != nil {
+		return nil, errors.New(strings.ToTitle("cannot decrypt file enc key"))
+	}
 	
 	// Check mac
 	mac, err := userlib.HMACEval(macKey, userTreeBytes)
@@ -442,19 +446,19 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	}
 
 	// Create user struct
-	userdataptr = &User{
+	userdata := User{
 		Username: username,
 		Salt:     userlib.RandomBytes(512),
 		password: password,
 	}
 
-	userdataptr.PassHash = userlib.Argon2Key([]byte(password), userdataptr.Salt, 512)
+	userdata.PassHash = userlib.Argon2Key([]byte(password), userdata.Salt, 512)
 
 	rsaPK, rsaSK, err := userlib.PKEKeyGen()
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot generate RSA keys"))
 	}
-	userdataptr.RSASK = rsaSK
+	userdata.RSASK = rsaSK
 	err = userlib.KeystoreSet(username+"_RSA", rsaPK)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot store RSA public key in keystore"))
@@ -464,7 +468,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot generate signature keys"))
 	}
-	userdataptr.SigSK = sigSK
+	userdata.SigSK = sigSK
 	err = userlib.KeystoreSet(username+"_Sig", sigPK)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot store signature public key in keystore"))
@@ -474,25 +478,25 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	if err != nil {
 		return nil, err
 	}
-	userdataptr.encKey = encKey
+	userdata.encKey = encKey
 
 	macKey, err := GetLocalKey(username, password, "mac")
 	if err != nil {
 		return nil, err
 	}
-	userdataptr.macKey = macKey
+	userdata.macKey = macKey
 
 	// Create user container
-	userBytes, err := json.Marshal(*userdataptr)
+	userBytes, err := json.Marshal(userdata)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot marshal user struct"))
 	}
-	encUserBytes := userlib.SymEnc(userdataptr.encKey, userlib.RandomBytes(16), userBytes)
-	userMAC, err := userlib.HMACEval(userdataptr.macKey, encUserBytes)
+	encUserBytes := userlib.SymEnc(userdata.encKey, userlib.RandomBytes(16), userBytes)
+	userMAC, err := userlib.HMACEval(userdata.macKey, encUserBytes)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("cannot compute HMAC of user struct"))
 	}
-	userCont := UserContainer{
+	userCont := UserContainer {
 		UserStruct: encUserBytes,
 		UserMAC: userMAC,
 	}
@@ -504,6 +508,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	}
 	userlib.DatastoreSet(userUUID, userContBytes)
 
+	userdataptr = &userdata
 	return userdataptr, nil
 }
 
@@ -519,6 +524,9 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	if !userlib.HMACEqual(givenHash, userStruct.PassHash) {
 		return nil, errors.New(strings.ToTitle("incorrect password"))
 	}
+
+	// Set password
+	userStruct.password = password
 
 	// Initialize local keys
 	encKey, err := GetLocalKey(username, password, "encryption")
@@ -728,20 +736,32 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 	if fileExist == false {
 		//create new user tree
 		fileContainer.UserTreeUUID = uuid.New()
+
 		//set user tree hmac
 		var emptyChildArr []UserTreeContainer
 		
 		var userTreeOwner = UserTree{Username: userdata.Username, Children: emptyChildArr}
+
+		userTreeUUIDMarshal, err := json.Marshal(fileContainer.UserTreeUUID)
+		if err != nil {
+			return err
+		}
+		userTreeMAC, err := userlib.HMACEval(userdata.fileMacKey, userTreeUUIDMarshal)
+		if err != nil {
+			return err
+		}
+		fileContainer.UserTreeMAC = userTreeMAC
+
 		userTreeOwnerMarshal, err := json.Marshal(userTreeOwner)
 		if err != nil {
 			return err
 		}
-		userTreeMAC, err := userlib.HMACEval(userdata.fileMacKey, userTreeOwnerMarshal)
+		userTreeOwnerMAC, err := userlib.HMACEval(userdata.fileMacKey, userTreeOwnerMarshal)
 		if err != nil {
 			return err
 		}
 
-		var userTreeContainerOwner = UserTreeContainer{UserTree: userTreeOwner, UserTreeMAC: userTreeMAC}
+		var userTreeContainerOwner = UserTreeContainer{UserTree: userTreeOwner, UserTreeMAC: userTreeOwnerMAC}
 		
 		userTreeContainerOwnerMarshal, err := json.Marshal(userTreeContainerOwner)
 		if err != nil {
@@ -880,10 +900,10 @@ func (userdata *User) LoadFile(filename string) (content []byte, err error) {
 }
 
 func (userdata *User) CreateInvitation(filename string, recipientUsername string) (invitationPtr uuid.UUID, err error) {
-	//Check integrity of caller's user struct
+	// Check integrity of caller's user struct
 	_, err = GetUserStruct(userdata.Username, userdata.password)
 	if err != nil {
-		return uuid.Nil, err // TODO: FAILS HERE
+		return uuid.Nil, err
 	}
 
 	// Get caller's file pointer
@@ -1018,12 +1038,6 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 		return errors.New(strings.ToTitle("recipient username does not exist"))
 	}
 
-	// Used to set userdata.fileEnckey
-	_, err = GetFile(userdata, filename)
-	if err != nil {
-		return err //HERE
-	}
-
 	// Get invitation container
 	invitContBytes, ok := userlib.DatastoreGet(invitationPtr)
 	if !ok {
@@ -1082,6 +1096,9 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 
 	// Get file pointer
 	filePtr, err := GetFilePointer(userdata, filename, userdata.Username)
+	if err != nil {
+		return err
+	}
 
 	// Get file container
 	fileContBytes, ok := userlib.DatastoreGet(filePtr.FileContUUID)
@@ -1094,14 +1111,20 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 		return errors.New(strings.ToTitle("cannot unmarshal file container bytes"))
 	}
 
+	// Decrypt file mac key
+	fileMACKey, err := userlib.PKEDec(userdata.RSASK, filePtr.FileMacKey)
+	if err != nil {
+		return errors.New(strings.ToTitle("cannot decrypt file mac key"))
+	}
+
 	// Verify integrity of user tree container UUID
 	userTreeUUIDBytes, err := json.Marshal(fileCont.UserTreeUUID)
 	if err != nil {
 		return errors.New(strings.ToTitle("cannot marshal user tree UUID"))
 	}
-	idMAC, err := userlib.HMACEval(filePtr.FileMacKey, userTreeUUIDBytes)
+	idMAC, err := userlib.HMACEval(fileMACKey, userTreeUUIDBytes)
 	if err != nil {
-		return errors.New(strings.ToTitle("cannot compute HMAC of user tree UUID"))
+		return errors.New(strings.ToTitle("cannot compute HMAC of user tree UUID!"))
 	}
 	equal := userlib.HMACEqual(idMAC, fileCont.UserTreeMAC)
 	if !equal {
@@ -1137,7 +1160,7 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 	if err != nil {
 		return errors.New(strings.ToTitle("cannot marshal user tree node struct"))
 	}
-	nodeMAC, err := userlib.HMACEval(filePtr.FileMacKey, userNodeBytes)
+	nodeMAC, err := userlib.HMACEval(fileMACKey, userNodeBytes)
 	if err != nil {
 		return errors.New(strings.ToTitle("cannot sign user tree node struct"))
 	}
