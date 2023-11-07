@@ -168,6 +168,7 @@ type UserTreeContainer struct {
 type UserTree struct {
 	Username string
 	Children []UserTreeContainer
+	ListAllUsers []string //array of usernames, of all people including those invited but not accepted
 }
 
 type UpdateListContainer struct {
@@ -400,7 +401,6 @@ func GetFile(userdata *User, filename string) (filedataptr *File, err error) {
 }
 
 func GetUserTreeFromTreeContainer(userdata *User, treeContainer UserTreeContainer, filename string) (userTree *UserTree, err error) {
-	// Get user tree bytes
 	userTreeBytes, err := json.Marshal(treeContainer.UserTree)
 	if err != nil {
 		return nil, errors.New(strings.ToTitle("unable to marshal tree struct bytes"))
@@ -424,7 +424,7 @@ func GetUserTreeFromTreeContainer(userdata *User, treeContainer UserTreeContaine
 	}
 	equal := userlib.HMACEqual(mac, treeContainer.UserTreeMAC)
 	if !equal {
-		return nil, errors.New(strings.ToTitle("tree node compromised"))
+		return nil, errors.New(treeContainer.UserTree.Username)
 	}
 
 	return &treeContainer.UserTree, nil
@@ -740,7 +740,8 @@ func (userdata *User) StoreFile(filename string, content []byte) (err error) {
 		//set user tree hmac
 		var emptyChildArr []UserTreeContainer
 
-		var userTreeOwner = UserTree{Username: userdata.Username, Children: emptyChildArr}
+		listAllUsers := []string{userdata.Username}
+		var userTreeOwner = UserTree{Username: userdata.Username, Children: emptyChildArr,  ListAllUsers:listAllUsers}
 
 		userTreeUUIDMarshal, err := json.Marshal(fileContainer.UserTreeUUID)
 		if err != nil {
@@ -1010,6 +1011,68 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 		return uuid.Nil, errors.New(strings.ToTitle("cannot marshal invitation container bytes"))
 	}
 	userlib.DatastoreSet(invitationPtr, invitContBytes)
+
+
+	//get usertree and add to list of invited users in owner's node
+	fileContUUID, err := GetFileContUUID(userdata, filename)
+	//get file container
+	fileContBytes, ok := userlib.DatastoreGet(fileContUUID)
+	if ok == false {
+		return uuid.Nil, errors.New(strings.ToTitle("file container UUID not found"))
+	}
+	var fileContainer FileContainer
+	err = json.Unmarshal(fileContBytes, &fileContainer)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot unmarshal file container"))
+	}
+
+	//verify file HMAC
+	newMAC, err := userlib.HMACEval(userdata.fileMacKey, fileContainer.FileStruct)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot compute HMAC of filestruct"))
+	}
+	equals := userlib.HMACEqual(fileContainer.FileMAC, newMAC)
+	if equals != true {
+		return uuid.Nil, errors.New(strings.ToTitle("HMAC verify failed for file1")) //HERE
+	}
+
+	// Get user tree container
+	userTreeContBytes, ok := userlib.DatastoreGet(fileContainer.UserTreeUUID)
+	if !ok {
+		return  uuid.Nil, errors.New(strings.ToTitle("user tree container not on datastore"))
+	}
+	var userTreeCont UserTreeContainer
+	err = json.Unmarshal(userTreeContBytes, &userTreeCont)
+	if err != nil {
+		return  uuid.Nil, errors.New(strings.ToTitle("cannot unmarshal user tree container"))
+	}
+	var userTree = userTreeCont.UserTree
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("cannot compute HMAC of filestruct"))
+	}
+
+	var userTreeNew = UserTree{Username: userTree.Username, Children: userTree.Children,  ListAllUsers:userTree.ListAllUsers}
+	//userTree.ListAllUsers = append(userTree.ListAllUsers, recipientUsername)
+	userTreeCont.UserTree = userTreeNew
+	userTreeOwnerMarshalNew, err := json.Marshal(userTreeNew)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("wewewewew"))
+	}
+
+	userTreeMacNew, err := userlib.HMACEval(fileMACKey, userTreeOwnerMarshalNew)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("wewewewew"))
+	}
+
+	userTreeCont.UserTreeMAC = userTreeMacNew
+	userTreeContainerMarshal, err := json.Marshal(userTreeCont)
+	if err != nil {
+		return uuid.Nil, errors.New(strings.ToTitle("wewewewew"))
+	}
+	userlib.DatastoreSet(fileContainer.UserTreeUUID, userTreeContainerMarshal)
+
+
+
 	return invitationPtr, nil
 }
 
@@ -1178,7 +1241,7 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 			isChild := false
 
 			// Find parent in user tree
-			currUserTree, err := GetUserTreeFromTreeContainer(userdata, userTree.Children[i], filename)
+			currUserTree := userTree.Children[i].UserTree
 			if err != nil {
 				return err
 			}
@@ -1186,7 +1249,7 @@ func (userdata *User) AcceptInvitation(senderUsername string, invitationPtr uuid
 				isChild = true
 			} else {
 				for j := 0; j < len(currUserTree.Children); i++ {
-					subUserTree, err := GetUserTreeFromTreeContainer(userdata, currUserTree.Children[j], filename)
+					subUserTree := currUserTree.Children[j].UserTree
 					if err != nil {
 						return err
 					}
@@ -1330,7 +1393,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) (e
 	}
 	//remove from tree
 	for i := 0; i < len(userTreeOwner.Children); i++ {
-		userTreeUser, err := GetUserTreeFromTreeContainer(userdata, userTreeOwner.Children[i], filename)
+		userTreeUser:= userTreeOwner.Children[i].UserTree
 		if err != nil {
 			return err
 		}
@@ -1410,7 +1473,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) (e
 
 	//set the second and third level users
 	for i := 0; i < len(userTreeOwner.Children); i++ {
-		userTreeUser, err := GetUserTreeFromTreeContainer(userdata, userTreeOwner.Children[i], filename)
+		userTreeUser:= userTreeOwner.Children[i].UserTree
 		if err != nil {
 			return err
 		}
@@ -1468,7 +1531,7 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) (e
 		userlib.DatastoreSet(filePointerUUID, filePointerContainerMarshal)
 
 		for j := 0; j < len(userTreeUser.Children); j++ {
-			userTree3, err := GetUserTreeFromTreeContainer(userdata, userTreeUser.Children[j], filename)
+			userTree3 := userTreeUser.Children[j].UserTree
 			if err != nil {
 				return err
 			}
