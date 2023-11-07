@@ -1050,8 +1050,8 @@ func (userdata *User) CreateInvitation(filename string, recipientUsername string
 	if err != nil {
 		return uuid.Nil, errors.New(strings.ToTitle("cannot compute HMAC of filestruct"))
 	}
-
-	var userTreeNew = UserTree{Username: userTree.Username, Children: userTree.Children,  ListAllUsers:userTree.ListAllUsers}
+	newListAllUsers := append(userTree.ListAllUsers, recipientUsername)
+	var userTreeNew = UserTree{Username: userTree.Username, Children: userTree.Children,  ListAllUsers:newListAllUsers}
 	//userTree.ListAllUsers = append(userTree.ListAllUsers, recipientUsername)
 	userTreeCont.UserTree = userTreeNew
 	userTreeOwnerMarshalNew, err := json.Marshal(userTreeNew)
@@ -1391,6 +1391,19 @@ func (userdata *User) RevokeAccess(filename string, recipientUsername string) (e
 	if err != nil {
 		return err
 	}
+	//check if user is invited or accepted invite already else error
+	found := false
+	for i := 0; i < len(userTreeOwner.ListAllUsers); i++ {
+		if userTreeOwner.ListAllUsers[i] == recipientUsername {
+			found = true
+		}
+	}
+
+	if found == false {
+		return errors.New(strings.ToTitle("recipient not invited or accepted invite"))
+	}
+
+	
 	//remove from tree
 	for i := 0; i < len(userTreeOwner.Children); i++ {
 		userTreeUser:= userTreeOwner.Children[i].UserTree
