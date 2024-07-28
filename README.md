@@ -14,7 +14,7 @@ Fill in this section with the student IDs of all the members in your project gro
 
 Partner 1 SID: 3035662850
 
-Partner 2 SID (if applicable): 3036669796
+Partner 2 SID: 3036669796
 
 Also add a link to this repo below (should start with https://github.com/cs161-students/).
 
